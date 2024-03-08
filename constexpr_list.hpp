@@ -97,7 +97,7 @@ namespace constexpr_list
 
 		constexpr list(size_type count,
 			const allocator_type& alloc = allocator_type()) requires (std::is_default_constructible_v<T>)
-			: alloc_(std::allocator_traits<allocator_type>::select_on_container_copy_construction(alloc))
+			: list(alloc)
 		{
 			while (count)
 			{
@@ -108,35 +108,24 @@ namespace constexpr_list
 
 		constexpr list(std::initializer_list<T> il,
 			const allocator_type& alloc = allocator_type())
-			: alloc_(std::allocator_traits<allocator_type>::select_on_container_copy_construction(alloc))
+			: list(il.begin(), il.end(), alloc)
 		{
-			for (const T& value : il)
-			{
-				this->push_back(value);
-			}
 		}
 
 		template <typename U> requires std::constructible_from<T, const U&> && (!std::same_as<T, U>)
 		constexpr list(std::initializer_list<U> il,
 			const allocator_type& alloc = allocator_type())
-			: alloc_(std::allocator_traits<allocator_type>::select_on_container_copy_construction(alloc))
+			: list(il.begin(), il.end(), alloc)
 		{
-			for (const U& value : il)
-			{
-				this->push_back(value);
-			}
 		}
 
-		template <std::input_iterator InputIt> requires std::constructible_from<T, std::iter_reference_t<InputIt>>
-		constexpr list(InputIt first, InputIt last,
+		template <std::input_iterator InputIt, std::sentinel_for<InputIt> S>
+			requires std::constructible_from<T, std::iter_reference_t<InputIt>>
+		constexpr list(InputIt first, S last,
 			const Allocator& alloc = Allocator())
 			: alloc_(std::allocator_traits<allocator_type>::select_on_container_copy_construction(alloc))
 		{
-			while (first != last)
-			{
-				this->push_back(*first);
-				++first;
-			}
+			this->insert(this->end(), std::move(first), std::move(last));
 		}
 
 		constexpr list(const list& other)
@@ -147,10 +136,17 @@ namespace constexpr_list
 
 		constexpr list(list&& other)
 			noexcept(std::allocator_traits<node_allocator>::is_always_equal::value)
-			: ptrs_{ other.ptrs_ }
+			: ptrs_{ other.ptrs_.next_, other.ptrs_.prev_ }
 			, size_{ other.size_ }
 			, alloc_(std::allocator_traits<allocator_type>::select_on_container_copy_construction(other.get_allocator()))
 		{
+			if (size_ == 0) [[unlikely]]
+			{
+				ptrs_ = links_{ &ptrs_, &ptrs_ };
+			}
+
+			other.ptrs_.next_->prev_ = &ptrs_;
+			other.ptrs_.prev_->next_ = &ptrs_;
 			other.size_ = 0;
 			other.ptrs_ = links_{ &other.ptrs_, &other.ptrs_ };
 		}
@@ -193,8 +189,9 @@ namespace constexpr_list
 				alloc_ = std::allocator_traits<allocator_type>::select_on_container_copy_construction(other.alloc_);
 			}
 
-			const auto copyable = other | std::views::take(this->size());
-			const auto new_ones = other | std::views::drop(this->size());
+			const_iterator mid_point = std::ranges::next(other.begin(), this->size(), other.end());
+			const auto copyable = std::ranges::subrange(other.begin(), mid_point);
+			const auto new_ones = std::ranges::subrange(mid_point, other.end());
 
 			std::ranges::copy(copyable, this->begin());
 			for (const auto& value : new_ones)
@@ -315,9 +312,9 @@ namespace constexpr_list
 		}
 		
 		template <typename U> requires std::assignable_from<T&, const U&> && std::constructible_from<T, const U&>
-		constexpr void assign(std::initializer_list<U> list)
+		constexpr void assign(std::initializer_list<U> ilist)
 		{
-			this->assign_range(list);
+			this->assign_range(ilist);
 		}
 
 		template <detail::container_compatible_range<T> R>
@@ -325,9 +322,10 @@ namespace constexpr_list
 		{
 			if constexpr (std::ranges::sized_range<R>)
 			{
-				auto it = std::ranges::copy_n(list.begin(), std::min(this->size(), std::ranges::size(rg)), this->begin()).out;
+				auto it = std::ranges::copy_n(std::ranges::begin(rg), std::min(this->size(), std::ranges::size(rg)), this->begin()).in;
+				auto end = std::ranges::end(rg);
 
-				while (it != std::ranges::end(rg))
+				while (it != end)
 				{
 					this->push_back(*it);
 					++it;
@@ -368,7 +366,7 @@ namespace constexpr_list
 
 			if (begin == end)
 			{
-				return pos;
+				return iterator{ const_cast<links_*>(pos.ptrs_) };
 			}
 			
 			auto first = this->emplace(pos, *begin);
@@ -385,15 +383,7 @@ namespace constexpr_list
 
 		constexpr iterator insert(const_iterator pos, const T& value)
 		{
-			node_* new_node = traits::allocate(alloc_, 1);
-			links_* prev = const_cast<links_*>(pos.ptrs_)->prev_;
-			traits::construct(alloc_, new_node, std::in_place, value);
-			prev->next_ = static_cast<links_*>(new_node);
-			new_node->prev_ = prev;
-			new_node->next_ = const_cast<links_*>(pos.ptrs_);
-			const_cast<links_*>(pos.ptrs_)->prev_ = static_cast<links_*>(new_node);
-			++size_;
-			return iterator{ static_cast<links_*>(new_node) };
+			return this->emplace(pos, value);
 		}
 
 		template <typename ... Args> requires std::constructible_from<T, Args...>
@@ -412,15 +402,7 @@ namespace constexpr_list
 
 		constexpr iterator insert(const_iterator pos, T&& value)
 		{
-			node_* new_node = traits::allocate(alloc_, 1);
-			links_* prev = const_cast<links_*>(pos.ptrs_)->prev_;
-			traits::construct(alloc_, new_node, std::in_place, std::move(value));
-			prev->next_ = static_cast<links_*>(new_node);
-			new_node->prev_ = prev;
-			new_node->next_ = const_cast<links_*>(pos.ptrs_);
-			const_cast<links_*>(pos.ptrs_)->prev_ = static_cast<links_*>(new_node);
-			++size_;
-			return iterator{ static_cast<links_*>(new_node) };
+			return this->emplace(pos, std::move(value));
 		}
 
 		constexpr iterator insert(const_iterator pos, size_type count, const T& value)
@@ -447,7 +429,7 @@ namespace constexpr_list
 		{
 			if (first == last)
 			{
-				return pos;
+				return iterator{ const_cast<links_*>(pos.ptrs_) };
 			}
 
 			auto it = this->insert(pos, *first);
@@ -465,7 +447,13 @@ namespace constexpr_list
 		template <typename U> requires std::constructible_from<T, const U&>
 		constexpr iterator insert(std::initializer_list<U> ilist)
 		{
-			return this->insert(ilist.begin(), ilist.end());
+			return this->insert_range(ilist);
+		}
+
+		template <typename U> requires std::constructible_from<T, const U&>
+		constexpr iterator insert(const_iterator pos, std::initializer_list<U> ilist)
+		{
+			return this->insert_range(pos, ilist);
 		}
 
 		constexpr void push_back(const T& value)
@@ -531,7 +519,7 @@ namespace constexpr_list
 				return this->end();
 			}
 
-			node_* removed = static_cast<node_*>(const_cast<links_*>(pos.ptrs_.next_));
+			node_* removed = static_cast<node_*>(const_cast<links_*>(pos.ptrs_));
 			links_* prev = removed->prev_;
 			prev->next_ = removed->next_;
 			removed->next_->prev_ = prev;
@@ -546,17 +534,15 @@ namespace constexpr_list
 
 		constexpr iterator erase(const_iterator first, const_iterator last)
 		{
-			if (first == last)
+			if (first != last)
 			{
-				return iterator(const_cast<links_*>(&last.ptrs_));
+				do
+				{
+					first = this->erase(first);
+				} while (first != last);
 			}
 
-			do
-			{
-				first = this->erase(first);
-			} while (first != last);
-
-			return first;
+			return iterator(const_cast<links_*>(last.ptrs_));
 		}
 
 		template <typename U> requires std::equality_comparable_with<const T&, const U&>
@@ -976,6 +962,8 @@ namespace constexpr_list
 			else
 			{
 				std::ranges::swap(this->ptrs_, other.ptrs_);
+				std::ranges::swap(this->ptrs_.prev_->next_, other.ptrs_.prev_->next_);
+				std::ranges::swap(this->ptrs_.next_->prev_, other.ptrs_.next_->prev_);
 			}
 
 			std::ranges::swap(size_, other.size_);
@@ -1052,7 +1040,9 @@ namespace constexpr_list
 		template <bool Const>
 		struct iterator_base
 		{
-		public:
+			friend struct iterator_base<!Const>;
+			friend class list;
+
 			using difference_type = typename list::difference_type;
 			using value_type = T;
 			using pointer = std::conditional_t<Const, typename list::const_pointer,
@@ -1077,6 +1067,7 @@ namespace constexpr_list
 				requires (Const == true)
 			{
 				ptrs_ = other.ptrs_;
+				return *this;
 			}
 
 			constexpr reference operator*() const noexcept
@@ -1122,8 +1113,7 @@ namespace constexpr_list
 				return std::addressof(**this);
 			}
 
-			template <bool Const2>
-			friend constexpr bool operator==(const iterator_base& lhs, const iterator_base<Const2>& rhs) noexcept
+			friend constexpr bool operator==(const iterator_base& lhs, const iterator_base& rhs) noexcept
 			{
 				return lhs.ptrs_ == rhs.ptrs_;
 			}
@@ -1140,9 +1130,6 @@ namespace constexpr_list
 			: ptrs_{ node }
 			{}
 
-			friend struct iterator_base<!Const>;
-			friend class list;
-
 			std::conditional_t<Const,
 				const links_, links_>* ptrs_ = nullptr;
 		};
@@ -1152,6 +1139,13 @@ namespace constexpr_list
 
 		[[no_unique_address]] node_allocator alloc_;
 	};
+
+	template <typename T, typename Alloc>
+	constexpr void swap(list<T, Alloc>& lhs, list<T, Alloc>& rhs)
+		noexcept(noexcept(lhs.swap(rhs)))
+	{
+		lhs.swap(rhs);
+	}
 
 	template <typename InputIt,
 		typename Alloc = std::allocator<typename std::iterator_traits<InputIt>::value_type>>
