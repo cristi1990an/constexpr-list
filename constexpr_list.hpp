@@ -623,6 +623,7 @@ namespace constexpr_list
 				this->insert_node_(pos, as_node);
 			}
 			other.ptrs_ = { &other.ptrs_, &other.ptrs_ };
+			other.size_ = 0;
 		}
 
 		constexpr void splice(const_iterator pos, list& other)
@@ -632,7 +633,7 @@ namespace constexpr_list
 
 		constexpr void splice(const_iterator pos, list&& other, const_iterator it)
 		{
-			links_* as_node = static_cast<links_*>(it.ptrs_);
+			links_* as_node = const_cast<links_*>(it.ptrs_);
 			links_* prev = as_node->prev_;
 			prev->next_ = as_node->next_;
 			as_node->next_->prev_ = prev;
@@ -649,9 +650,11 @@ namespace constexpr_list
 		constexpr void splice(const_iterator pos, list&& other,
 			const_iterator first, const_iterator last)
 		{
-			for (const_iterator it = first; it != last; ++it)
+			for (const_iterator it = first; it != last;)
 			{
+				auto tmp = std::ranges::next(it);
 				this->splice(pos, other, it);
+				it = tmp;
 			}
 		}
 
@@ -661,7 +664,7 @@ namespace constexpr_list
 			this->splice(pos, std::move(other), first, last);
 		}
 
-		template <std::indirect_binary_predicate Compare>
+		template <typename Compare>
 		constexpr void merge(list&& other, Compare comp)
 		{
 			if (this == &other)
@@ -672,14 +675,14 @@ namespace constexpr_list
 			auto pos = this->begin();
 			auto it = other.begin();
 
-			if (pos == this->end())
+			if (it == other.end())
 			{
-				this->splice(pos, other, it);
 				return;
 			}
 
-			if (it == other.end())
+			if (pos == this->end())
 			{
+				this->splice(pos, other, it);
 				return;
 			}
 
@@ -688,7 +691,9 @@ namespace constexpr_list
 				const T& value = *it;
 				if (std::invoke(comp, value, *pos))
 				{
+					auto tmp = std::ranges::next(it);
 					this->splice(pos, other, it);
+					it = tmp;
 
 					if (it == other.end())
 					{
@@ -716,12 +721,12 @@ namespace constexpr_list
 
 		constexpr void merge(list& other)
 		{
-			this->merge(other, std::less{});
+			this->merge(std::move(other), std::less{});
 		}
 
 		constexpr void merge(list&& other)
 		{
-			this->merge(other, std::less{});
+			this->merge(std::move(other), std::less{});
 		}
 
 		template <typename Compare>
@@ -931,6 +936,40 @@ namespace constexpr_list
 			}
 			ptrs_.next_ = &ptrs_;
 			ptrs_.prev_ = &ptrs_;
+		}
+
+		constexpr size_type unique()
+		{
+			return this->unique(std::equal_to{});
+		}
+
+		template <typename BinaryPredicate>
+		constexpr size_type unique(BinaryPredicate p)
+		{
+			if (this->empty())
+			{
+				return 0;
+			}
+
+			size_type counter = 0;
+
+			for (iterator it = begin(); it != end(); ++it)
+			{
+				const T& value = *it;
+				size_type to_be_erased = 0;
+				
+				auto it2 = std::ranges::next(it);
+				while (it2 != end() && p(value, *it2))
+				{
+					++it2;
+					to_be_erased++;
+				}
+
+				this->erase(std::ranges::next(it), it2);
+				counter += to_be_erased;
+			}
+
+			return counter;
 		}
 
 		constexpr void swap(list& other) noexcept
