@@ -603,7 +603,7 @@ namespace constexpr_list
 	private:
 
 		struct node_;
-		constexpr iterator insert_node_(const_iterator pos, node_* new_node)
+		constexpr iterator insert_node_(const_iterator pos, node_* new_node) noexcept
 		{
 			links_* prev = const_cast<links_*>(pos.ptrs_)->prev_;
 			prev->next_ = static_cast<links_*>(new_node);
@@ -615,7 +615,7 @@ namespace constexpr_list
 		}
 
 	public:
-		constexpr void splice(const_iterator pos, list&& other)
+		constexpr void splice(const_iterator pos, list&& other) noexcept
 		{
 			for (iterator it = other.begin(); it != other.end(); ++it)
 			{
@@ -626,12 +626,12 @@ namespace constexpr_list
 			other.size_ = 0;
 		}
 
-		constexpr void splice(const_iterator pos, list& other)
+		constexpr void splice(const_iterator pos, list& other) noexcept
 		{
 			this->splice(pos, std::move(other));
 		}
 
-		constexpr void splice(const_iterator pos, list&& other, const_iterator it)
+		constexpr void splice(const_iterator pos, list&& other, const_iterator it) noexcept
 		{
 			links_* as_node = const_cast<links_*>(it.ptrs_);
 			links_* prev = as_node->prev_;
@@ -642,13 +642,13 @@ namespace constexpr_list
 			this->insert_node_(pos, static_cast<node_*>(as_node));
 		}
 
-		constexpr void splice(const_iterator pos, list& other, const_iterator it)
+		constexpr void splice(const_iterator pos, list& other, const_iterator it) noexcept
 		{
 			this->splice(pos, std::move(other), it);
 		}
 
 		constexpr void splice(const_iterator pos, list&& other,
-			const_iterator first, const_iterator last)
+			const_iterator first, const_iterator last) noexcept
 		{
 			for (const_iterator it = first; it != last;)
 			{
@@ -659,13 +659,13 @@ namespace constexpr_list
 		}
 
 		constexpr void splice(const_iterator pos, list& other,
-			const_iterator first, const_iterator last)
+			const_iterator first, const_iterator last) noexcept
 		{
 			this->splice(pos, std::move(other), first, last);
 		}
 
 		template <typename Compare>
-		constexpr void merge(list&& other, Compare comp)
+		constexpr void merge(list&& other, Compare comp) noexcept
 		{
 			if (this == &other)
 			{
@@ -714,17 +714,17 @@ namespace constexpr_list
 		}
 
 		template <std::indirect_binary_predicate Compare>
-		constexpr void merge(list& other, Compare comp)
+		constexpr void merge(list& other, Compare comp) noexcept
 		{
 			this->merge(std::move(other), std::ref(comp));
 		}
 
-		constexpr void merge(list& other)
+		constexpr void merge(list& other) noexcept
 		{
 			this->merge(std::move(other), std::less{});
 		}
 
-		constexpr void merge(list&& other)
+		constexpr void merge(list&& other) noexcept
 		{
 			this->merge(std::move(other), std::less{});
 		}
@@ -1009,6 +1009,7 @@ namespace constexpr_list
 		}
 
 		friend constexpr bool operator==(const list& lhs, const list& rhs)
+			noexcept(noexcept(std::declval<const T&>() == std::declval<const T&>()))
 		{
 			return std::ranges::equal(lhs, rhs);
 		}
@@ -1188,7 +1189,7 @@ namespace constexpr_list
 
 	template <typename InputIt,
 		typename Alloc = std::allocator<typename std::iterator_traits<InputIt>::value_type>>
-		list(InputIt, InputIt, Alloc = Alloc())
+	list(InputIt, InputIt, Alloc = Alloc())
 		->list<typename std::iterator_traits<InputIt>::value_type, Alloc>;
 
 	template <std::ranges::input_range R,
