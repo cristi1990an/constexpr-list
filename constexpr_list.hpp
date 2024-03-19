@@ -91,11 +91,11 @@ namespace constexpr_list
 
 		constexpr list() noexcept = default;
 
-		constexpr list(const Allocator& alloc)
+		explicit constexpr list(const Allocator& alloc)
 			: alloc_(std::allocator_traits<allocator_type>::select_on_container_copy_construction(alloc))
 		{}
 
-		constexpr list(size_type count,
+		explicit constexpr list(size_type count,
 			const allocator_type& alloc = allocator_type()) requires (std::is_default_constructible_v<T>)
 			: list(alloc)
 		{
@@ -129,16 +129,23 @@ namespace constexpr_list
 		}
 
 		constexpr list(const list& other)
-			: list(other.begin(), other.end())
+			: alloc_(std::allocator_traits<allocator_type>::select_on_container_copy_construction(
+				other.get_allocator()))
 		{
+			this->insert(this->end(), other.begin(), other.end());
+		}
 
+		constexpr list(const list& other, const allocator_type& alloc)
+			: alloc_(std::allocator_traits<allocator_type>::select_on_container_copy_construction(alloc))
+		{
+			this->insert(this->end(), other.begin(), other.end());
 		}
 
 		constexpr list(list&& other)
-			noexcept(std::allocator_traits<node_allocator>::is_always_equal::value)
+			noexcept(std::allocator_traits<allocator_type>::is_always_equal::value)
 			: ptrs_{ other.ptrs_.next_, other.ptrs_.prev_ }
 			, size_{ other.size_ }
-			, alloc_(std::allocator_traits<allocator_type>::select_on_container_copy_construction(other.get_allocator()))
+			, alloc_( std::move(other.alloc_) )
 		{
 			if (size_ == 0) [[unlikely]]
 			{
@@ -151,7 +158,52 @@ namespace constexpr_list
 			other.ptrs_ = links_{ &other.ptrs_, &other.ptrs_ };
 		}
 
-		constexpr list(size_type count,
+		constexpr list(list&& other, const allocator_type& alloc) noexcept
+			requires(std::allocator_traits<allocator_type>::is_always_equal::value)
+			: ptrs_{ other.ptrs_.next_, other.ptrs_.prev_ }
+			, size_{ other.size_ }
+			, alloc_(std::allocator_traits<allocator_type>::select_on_container_copy_construction(alloc))
+		{
+			if (size_ == 0) [[unlikely]]
+			{
+				ptrs_ = links_{ &ptrs_, &ptrs_ };
+			}
+
+			other.ptrs_.next_->prev_ = &ptrs_;
+			other.ptrs_.prev_->next_ = &ptrs_;
+			other.size_ = 0;
+			other.ptrs_ = links_{ &other.ptrs_, &other.ptrs_ };
+		}
+
+		constexpr list(list&& other, const allocator_type& alloc)
+			requires(!std::allocator_traits<allocator_type>::is_always_equal::value)
+			: alloc_(std::allocator_traits<allocator_type>::select_on_container_copy_construction(alloc))
+		{
+			if (alloc_ != other.alloc_)
+			{
+				this->assign_range(other | std::views::as_rvalue);
+			}
+			else
+			{
+				size_ = other.size_;
+
+				if (size_ == 0) [[unlikely]]
+				{
+					ptrs_ = links_{ &ptrs_, &ptrs_ };
+				}
+				else
+				{
+					ptrs_ = { other.ptrs_.next_, other.ptrs_.prev_ };
+				}
+
+				other.ptrs_.next_->prev_ = &ptrs_;
+				other.ptrs_.prev_->next_ = &ptrs_;
+				other.size_ = 0;
+				other.ptrs_ = links_{ &other.ptrs_, &other.ptrs_ };
+			}
+		}
+
+		explicit constexpr list(size_type count,
 			const T& value = T(),
 			const allocator_type& alloc = allocator_type())
 			: alloc_(std::allocator_traits<allocator_type>::select_on_container_copy_construction(alloc))
@@ -220,9 +272,11 @@ namespace constexpr_list
 		}
 
 		constexpr list& operator=(list&& other)
-			noexcept(std::allocator_traits<node_allocator>::is_always_equal::value)
+			noexcept(std::allocator_traits<node_allocator>::is_always_equal::value
+				|| !std::allocator_traits<node_allocator>::propagate_on_container_move_assignment::value)
 		{
-			if constexpr (std::allocator_traits<node_allocator>::propagate_on_container_move_assignment::value)
+			if constexpr (std::allocator_traits<node_allocator>::propagate_on_container_move_assignment::value
+				&& !std::allocator_traits<node_allocator>::is_always_equal::value)
 			{
 				if (alloc_ != other.alloc_)
 				{
@@ -322,7 +376,8 @@ namespace constexpr_list
 		{
 			if constexpr (std::ranges::sized_range<R>)
 			{
-				auto it = std::ranges::copy_n(std::ranges::begin(rg), std::min(this->size(), std::ranges::size(rg)), this->begin()).in;
+				const auto rg_size = static_cast<size_type>(std::ranges::size(rg));
+				auto it = std::ranges::copy_n(std::ranges::begin(rg), std::min(this->size(), rg_size), this->begin()).in;
 				auto end = std::ranges::end(rg);
 
 				while (it != end)
@@ -331,7 +386,7 @@ namespace constexpr_list
 					++it;
 				}
 
-				while (this->size() > std::ranges::size(rg))
+				while (this->size() > rg_size)
 				{
 					this->pop_back();
 				}
@@ -1185,6 +1240,20 @@ namespace constexpr_list
 		noexcept(noexcept(lhs.swap(rhs)))
 	{
 		lhs.swap(rhs);
+	}
+
+	template <typename T, typename Alloc, typename U>
+	constexpr auto erase(list<T, Alloc>& c, const U& value)
+		-> typename list<T, Alloc>::size_type
+	{
+		return c.remove_if([&](auto& elem) { return elem == value; });
+	}
+
+	template <typename T, typename Alloc, typename Pred>
+	constexpr auto erase_if(list<T, Alloc>& c, Pred pred)
+		-> typename list<T, Alloc>::size_type
+	{
+		return c.remove_if(std::ref(pred));
 	}
 
 	template <typename InputIt,
